@@ -28,9 +28,10 @@ on:
     # UK/Europe + US football hours. cron is UTC; edit the times to taste.
     - cron: "0 7,11,14,17,20 * * *"
 
-# allow the job to push the updated state.json back
+# contents: push the updated state.json back; issues: open a failure alert
 permissions:
   contents: write
+  issues: write
 
 # never run two posts at once (would race on state.json)
 concurrency:
@@ -103,3 +104,33 @@ jobs:
             output/*.mp4
           if-no-files-found: ignore
           retention-days: 7
+
+      # On failure, open (or comment on an already-open) issue so you get a
+      # GitHub email alert. Deduped: one open issue, commented on each new
+      # failure — close it once fixed and the next failure opens a fresh one.
+      - name: Alert on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = [
+              'The scheduled Facebook Reel job **failed**.',
+              '',
+              `- Run log: ${runUrl}`,
+              `- Run number: #${context.runNumber}`,
+              '',
+              'Likely causes: Facebook token invalidated, a news feed offline, ' +
+              'or a build/dependency error. Open the run log above for details.',
+            ].join('\n');
+            const open = await github.rest.issues.listForRepo(
+              { owner, repo, state: 'open', labels: 'reel-failure' });
+            if (open.data.length) {
+              await github.rest.issues.createComment(
+                { owner, repo, issue_number: open.data[0].number, body });
+            } else {
+              await github.rest.issues.create(
+                { owner, repo, title: '⚠️ Football Reel posting is failing',
+                  body, labels: ['reel-failure'] });
+            }
