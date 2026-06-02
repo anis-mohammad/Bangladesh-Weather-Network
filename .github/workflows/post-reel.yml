@@ -1,6 +1,6 @@
-name: Post News Reel to Facebook
+name: Post Football Reel to Facebook
 
-# Each run rotates across all US sources (src/feeds.py): prepare (clean headline,
+# Each run rotates across all football sources (src/feeds.py): prepare (clean headline,
 # build the branded card + 3s video, stage it) then publish (caption + rotating
 # hashtags + auto source comment). Dedup + rotation + hashtag cursors live in
 # state.json and are committed back so they persist between scheduled runs.
@@ -24,9 +24,9 @@ on:
         type: boolean
         default: false
   schedule:
-    # Twice a day at 09:00 and 18:00 UTC. cron is UTC. Add more times to post
-    # more often, e.g. "0 6,12,18 * * *" for three times a day.
-    - cron: "0 9,18 * * *"
+    # Five times a day (UTC): 07:00, 11:00, 14:00, 17:00, 20:00 — spread across
+    # UK/Europe + US football hours. cron is UTC; edit the times to taste.
+    - cron: "0 7,11,14,17,20 * * *"
 
 # allow the job to push the updated state.json back
 permissions:
@@ -56,7 +56,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build and post Reel
+      - name: Build and post Football Reel
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}

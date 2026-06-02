@@ -1,4 +1,4 @@
-"""Render a 720x900 (4:5) news photocard from an Article.
+"""Render a 720x900 (4:5) football news photocard from an Article.
 
 Layout (top -> bottom):
   - Full-bleed article image, cover-cropped, darkened with a bottom gradient.
@@ -30,7 +30,7 @@ ACCENT = (230, 30, 45)        # red accent bar
 TEXT = (255, 255, 255)
 MUTED = (210, 210, 215)
 
-BRAND = "THE STATE POST"      # main brand/logo shown on every card
+BRAND = "THE CROSSBAR"        # main brand/logo shown on every card
 PANEL = (18, 19, 26)          # solid dark panel behind the headline
 
 
@@ -141,7 +141,7 @@ def _wrap_px(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
 
 
 def _draw_wordmark(draw, style: "CardStyle", margin: int, top: int, brand_size: int, s: float) -> None:
-    """Draw the text brand 'THE STATE POST' with a red accent bar, at vertical `top`."""
+    """Draw the text brand 'THE CROSSBAR' with a red accent bar, at vertical `top`."""
     brand_font = _font(brand_size, "ExtraBold")
     bar_w = max(4, int(14 * s))
     draw.rectangle(
@@ -152,6 +152,27 @@ def _draw_wordmark(draw, style: "CardStyle", margin: int, top: int, brand_size: 
         style.brand.upper(),
         font=brand_font,
         fill=TEXT,
+    )
+
+
+def _draw_wordmark_right(draw, style: "CardStyle", w: int, margin: int, center_y: int,
+                         brand_size: int, s: float) -> None:
+    """Draw the text brand right-aligned, vertically centred on `center_y`, with a red accent bar."""
+    brand_font = _font(brand_size, "ExtraBold")
+    text = style.brand.upper()
+    text_w = brand_font.getlength(text)
+    bbox = brand_font.getbbox(text)
+    cap_h = bbox[3] - bbox[1]
+    bar_w = max(3, int(10 * s))
+    gap = int(14 * s)
+    right = w - margin
+    # text right-aligned, vertically centred on center_y (anchor="rm")
+    draw.text((right, center_y), text, font=brand_font, fill=TEXT, anchor="rm")
+    # accent bar just left of the text, centred on the same line
+    bar_right = int(right - text_w - gap)
+    draw.rectangle(
+        [bar_right - bar_w, center_y - cap_h // 2, bar_right, center_y + cap_h // 2],
+        fill=style.accent,
     )
 
 
@@ -278,27 +299,26 @@ def _compose(article: Article, style: CardStyle):
     draw.rectangle([0, img_h, w, img_h + accent_h], fill=style.accent)
     draw.rectangle([0, bar_top, w, h], fill=style.accent)
 
-    # --- top brand: anchored onto the sharp image (below the top gap) ---
-    brand_top = max(margin, photo_top + int(22 * s))
-    if os.path.exists(LOGO_PATH):
-        try:
-            logo = Image.open(LOGO_PATH).convert("RGBA")
-            target_h = int(64 * s)
-            target_w = int(logo.width * (target_h / logo.height))
-            logo = logo.resize((target_w, target_h), Image.LANCZOS)
-            card.alpha_composite(logo, (margin, brand_top))
-        except Exception:
-            _draw_wordmark(draw, style, margin, brand_top, brand_size, s)
-    else:
-        _draw_wordmark(draw, style, margin, brand_top, brand_size, s)
-
-    # --- LIVE badge + headline (row_top computed above) ---
+    # --- LIVE badge (left) + brand (right) share one row, above the headline ---
     icon_cx = margin + R
     icon_cy = row_top + live_h // 2
     icon_geom = (icon_cx, icon_cy, R, ring_th, inner_r)
     live_x = margin + 2 * R + int(16 * s)
-    live_ty = icon_cy - live_font.getbbox("LIVE")[3] // 2
-    draw.text((live_x, live_ty), "LIVE", font=live_font, fill=TEXT)
+    # anchor="lm" → vertically centred on icon_cy, exactly level with the dot icon
+    draw.text((live_x, icon_cy), "LIVE", font=live_font, fill=TEXT, anchor="lm")
+
+    # brand logo/wordmark, right-aligned on the LIVE row
+    if os.path.exists(LOGO_PATH):
+        try:
+            logo = Image.open(LOGO_PATH).convert("RGBA")
+            target_h = max(2 * R, int(48 * s))
+            target_w = int(logo.width * (target_h / logo.height))
+            logo = logo.resize((target_w, target_h), Image.LANCZOS)
+            card.alpha_composite(logo, (w - margin - target_w, icon_cy - target_h // 2))
+        except Exception:
+            _draw_wordmark_right(draw, style, w, margin, icon_cy, brand_size, s)
+    else:
+        _draw_wordmark_right(draw, style, w, margin, icon_cy, brand_size, s)
 
     # --- headline (mixed weight) ---
     y = row_top + live_h + gap
@@ -349,9 +369,9 @@ def save_card(article: Article, out_path: str, style: CardStyle | None = None) -
 
 if __name__ == "__main__":
     demo = Article(
-        title="Scientists discover a new way to turn news headlines into short video reels",
+        title="Late winner sends underdogs through to the cup final in dramatic style",
         image_url=None,
-        source="DEMO NEWS",
+        source="DEMO FOOTBALL",
         url="https://example.com",
     )
     save_card(demo, "output/demo_card.png")

@@ -1,8 +1,8 @@
-# News → Facebook Reel
+# Football News → Facebook Reel
 
-Turn any news article (or RSS feed) into a clean 720×900 (4:5) photocard, render
-it as a short MP4, and auto-publish it as a **Facebook Reel** via the Graph API —
-locally or on a schedule with GitHub Actions.
+Turn any football/soccer article (or RSS feed) into a clean 720×900 (4:5)
+photocard, render it as a short MP4, and auto-publish it as a **Facebook Reel**
+via the Graph API — locally or on a schedule with GitHub Actions.
 
 ```
 URL / RSS  ──▶  scrape (headline + image)  ──▶  photocard (720×900 PNG)
@@ -14,8 +14,10 @@ URL / RSS  ──▶  scrape (headline + image)  ──▶  photocard (720×900 
 | File | Role |
 |------|------|
 | [src/scraper.py](src/scraper.py) | Extract headline/image/source from a URL (Open Graph tags) or an RSS feed |
+| [src/feeds.py](src/feeds.py) | Curated list of football/soccer RSS feeds the rotation cycles through |
 | [src/photocard.py](src/photocard.py) | Render the 720×900 card with Pillow (Montserrat font, brand bar, gradient) |
 | [src/video.py](src/video.py) | Card → 3s MP4 with a subtle slow-zoom, via `ffmpeg` |
+| [src/hashtags.py](src/hashtags.py) | 100 football hashtags, used 5 per post in rotating blocks |
 | [src/facebook.py](src/facebook.py) | Publish a Reel through the Graph API resumable-upload flow |
 | [main.py](main.py) | CLI that wires the whole pipeline together |
 | [.github/workflows/post-reel.yml](.github/workflows/post-reel.yml) | Scheduled / manual auto-posting |
@@ -38,26 +40,26 @@ cp .env.example .env          # then fill in FB_PAGE_ID + FB_PAGE_ACCESS_TOKEN
 Generate a card + video **without** posting (great for previewing):
 
 ```bash
-.venv/bin/python main.py --rss "https://feeds.bbci.co.uk/news/world/rss.xml" --no-post
-.venv/bin/python main.py --url "https://www.example.com/news/story" --no-post
+.venv/bin/python main.py --rss "https://feeds.bbci.co.uk/sport/football/rss.xml" --no-post
+.venv/bin/python main.py --url "https://www.bbc.com/sport/football/story" --no-post
 ```
 
 Generate **and publish** a Reel:
 
 ```bash
-.venv/bin/python main.py --rss "https://feeds.bbci.co.uk/news/world/rss.xml"
+.venv/bin/python main.py --rss "https://feeds.bbci.co.uk/sport/football/rss.xml"
 ```
 
-**Auto-rotate across all US sources** (posts the next not-yet-posted story,
-cycling through every feed in [src/feeds.py](src/feeds.py)):
+**Auto-rotate across all football sources** (posts the next not-yet-posted
+story, cycling through every feed in [src/feeds.py](src/feeds.py)):
 
 ```bash
 .venv/bin/python main.py --rotate
 ```
 
 Rotation remembers what it posted in `state.json` (repo root) so it never
-repeats a story and spreads posts evenly across PBS NewsHour, NPR, NBC, CBS,
-ABC, Fox, CNN, The Hill, Politico, NY Times, LA Times, Guardian US and Newsweek.
+repeats a story and spreads posts evenly across BBC Sport, Sky Sports, Guardian
+Football, ESPN, Goal, 90min, Football365, The Independent and Mirror Football.
 Edit `src/feeds.py` to add/remove sources.
 
 Handy flags:
@@ -65,11 +67,10 @@ Handy flags:
 | Flag | Effect |
 |------|--------|
 | `--title "..."` | Override the scraped headline |
-| `--brand "MY NEWS"` | Brand label shown on the card (default: detected source) |
+| `--brand "MY FOOTBALL"` | Brand label shown on the card (default: THE CROSSBAR) |
 | `--caption "..."` | Extra text appended to the Reel caption |
 | `--rss-index N` | Use the Nth feed entry (0 = newest) |
 | `--duration 5` | Video length in seconds (default 3) |
-| `--zoom` | Enable a subtle slow-zoom (default: static, no movement) |
 | `--no-post` | Build assets only |
 
 Outputs land in `output/` as `YYYYMMDD-slug.png` and `.mp4`.
@@ -96,13 +97,13 @@ scopes `pages_manage_posts`, `pages_read_engagement`, `pages_show_list`.
 
 ## Automating with GitHub Actions
 
-The workflow rotates across all US sources (`--rotate`) on a schedule and on
-manual dispatch.
+The workflow rotates across all football sources (`--rotate`) on a schedule and
+on manual dispatch. After pushing this project to your own repo:
 
 1. **Repo → Settings → Secrets and variables → Actions**
    - Secrets: `FB_PAGE_ID`, `FB_PAGE_ACCESS_TOKEN`
 2. Adjust the `cron:` schedule in [post-reel.yml](.github/workflows/post-reel.yml)
-   (default: every 3 hours, UTC). Dial it down for a new page.
+   (default: 09:00 and 18:00 UTC). Dial it down for a new page.
 3. Trigger manually from the **Actions** tab — you can pass a one-off `url`/`rss`
    or tick `no_post` to dry-run (assets are uploaded as a build artifact).
 
@@ -112,8 +113,8 @@ manual dispatch.
 
 ## Notes & limits
 
-- Scraping relies on the site exposing `og:title` / `og:image`. Most news sites
-  do; for awkward ones, pass `--title` and the pipeline still uses the OG image.
+- Scraping relies on the site exposing `og:title` / `og:image`. Most football
+  sites do; for awkward ones, pass `--title` and the pipeline still uses the OG image.
 - Reels require a video ≥ 3s with an audio stream — we add a silent AAC track.
-- Respect each news site's terms of service and copyright before republishing
-  their headlines/images.
+- Respect each site's terms of service and copyright before republishing their
+  headlines/images.

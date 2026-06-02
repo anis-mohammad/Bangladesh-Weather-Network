@@ -1,4 +1,4 @@
-"""Rotate across all US feeds and return the next not-yet-posted article.
+"""Rotate across all football feeds and return the next not-yet-posted article.
 
 State is a small JSON file (default output/state.json):
   { "posted": ["url1", "url2", ...], "cursor": <int> }
@@ -13,7 +13,7 @@ import json
 import os
 
 from . import scraper
-from .feeds import US_FEEDS
+from .feeds import FOOTBALL_FEEDS
 
 DEFAULT_STATE = "state.json"      # repo root so it can be committed back in CI
 MAX_HISTORY = 1000          # cap the posted-URL list so the file stays small
@@ -46,7 +46,7 @@ def pick_next(state_path: str = DEFAULT_STATE, feeds: dict | None = None):
 
     Raises RuntimeError if every source's recent entries have all been posted.
     """
-    feeds = feeds or US_FEEDS
+    feeds = feeds or FOOTBALL_FEEDS
     names = list(feeds.keys())
     state = _load(state_path)
     seen = set(state["posted"])
@@ -69,13 +69,15 @@ def pick_next(state_path: str = DEFAULT_STATE, feeds: dict | None = None):
                 art = scraper.from_rss(url, i)
             except Exception:
                 continue
-            if not art.title:
+            # need both a headline and an image — an imageless story renders a
+            # blank card, so skip it and keep looking (next entry / next source).
+            if not art.title or not art.image_url:
                 continue
             # advance cursor past this source so next run uses the following one
             state["cursor"] = (idx + 1) % len(names)
             return art, name, state
 
-    raise RuntimeError("No fresh (unposted) story found across any source right now.")
+    raise RuntimeError("No fresh (unposted) story with an image found across any source right now.")
 
 
 def mark_posted(state_path: str, state: dict, url: str) -> None:

@@ -1,14 +1,14 @@
-"""News -> photocard -> 3s video -> Facebook Reel.
+"""Football news -> photocard -> 3s video -> Facebook Reel.
 
 Examples:
   # From a single article URL, generate card + video only (no posting):
-  python main.py --url "https://www.bbc.com/news/..." --no-post
+  python main.py --url "https://www.bbc.com/sport/football/..." --no-post
 
   # From an RSS feed (newest entry), generate and publish a Reel:
-  python main.py --rss "https://feeds.bbci.co.uk/news/rss.xml"
+  python main.py --rss "https://feeds.bbci.co.uk/sport/football/rss.xml"
 
   # Override the headline / brand label:
-  python main.py --url "..." --title "Custom headline" --brand "MY NEWS"
+  python main.py --url "..." --title "Custom headline" --brand "MY FOOTBALL"
 
 Credentials for posting come from environment / .env:
   FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN
@@ -128,21 +128,21 @@ def _publish_staged(staged_path: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    p = argparse.ArgumentParser(description="News -> Facebook Reel pipeline")
+    p = argparse.ArgumentParser(description="Football news -> Facebook Reel pipeline")
     src_grp = p.add_mutually_exclusive_group()
     src_grp.add_argument("--url", help="article URL (generic OG-tag scrape)")
     src_grp.add_argument("--rss", help="RSS/Atom feed URL")
     src_grp.add_argument(
         "--rotate",
         action="store_true",
-        help="auto-pick the next unposted story, rotating across all US sources (stages it)",
+        help="auto-pick the next unposted story, rotating across all football sources (stages it)",
     )
     p.add_argument("--publish", action="store_true", help="publish the previously staged Reel")
     p.add_argument("--rss-index", type=int, default=0, help="entry index in feed (0=newest)")
     p.add_argument("--state", default="state.json", help="rotation/dedup state file")
     p.add_argument("--staged", default="staged.json", help="staged-Reel file (prepare→publish)")
     p.add_argument("--title", help="override the scraped headline")
-    p.add_argument("--brand", help="main brand/logo text on the card (default: THE STATE POST)")
+    p.add_argument("--brand", help="main brand/logo text on the card (default: THE CROSSBAR)")
     p.add_argument("--duration", type=float, default=3.0, help="video length in seconds")
     p.add_argument("--no-post", action="store_true", help="generate + stage but do not publish")
     p.add_argument("--caption", help="extra text appended to the Reel caption")
