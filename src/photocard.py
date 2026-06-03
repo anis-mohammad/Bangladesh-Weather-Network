@@ -1,48 +1,87 @@
-"""Render a 720x900 (4:5) football news photocard from an Article.
+"""Render a 720x900 (4:5) Bangla weather card for all 8 Bangladesh divisions.
 
-Layout (top -> bottom):
-  - Full-bleed article image, cover-cropped, darkened with a bottom gradient.
-  - Top brand bar: source name + a small accent rule.
-  - Bottom block: wrapped headline + date footer.
+A bright, clean weather-app look: a soft sky-tinted background, a 2x4 grid of
+white cards with gentle drop shadows — one per division — each with a drawn
+weather-condition icon, the division name, a large current temperature
+(colour-coded by heat) and the day's low / high. A pulsing dot in the header
+chip animates the video.
 
-If the article has no image, a clean dark gradient is used instead.
+Everything user-facing is in Bangla (Noto Sans Bengali, complex-shaped via raqm).
 """
 from __future__ import annotations
 
-import datetime as _dt
-import io
 import math
 import os
 from dataclasses import dataclass
 
-import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .scraper import Article, HEADERS, TIMEOUT
+from . import bangla
+from .weather import WeatherReport
 
 W, H = 720, 900               # default card size (4:5 portrait)
 _ASSETS = os.path.join(os.path.dirname(__file__), "..", "assets")
-FONT_PATH = os.path.join(_ASSETS, "fonts", "Montserrat.ttf")
-LOGO_PATH = os.path.join(_ASSETS, "logo.png")   # optional; used if present
+FONT_PATH = os.path.join(_ASSETS, "fonts", "NotoSansBengali.ttf")
+LOGO_PATH = os.path.join(_ASSETS, "logo.png")   # optional brand logo (BWN)
 
-# Brand colours (tweak freely).
-ACCENT = (230, 30, 45)        # red accent bar
-TEXT = (255, 255, 255)
-MUTED = (210, 210, 215)
+BRAND = "বাংলাদেশ আবহাওয়া"   # title shown on every card
 
-BRAND = "THE CROSSBAR"        # main brand/logo shown on every card
-PANEL = (18, 19, 26)          # solid dark panel behind the headline
+
+@dataclass
+class Theme:
+    bg_top: tuple
+    bg_bottom: tuple
+    card_bg: tuple
+    card_border: tuple
+    ink: tuple              # primary text on cards
+    subink: tuple           # muted secondary text
+    accent: tuple           # chip / header bar
+    live: tuple             # pulsing dot
+    shadow: tuple           # RGBA card shadow
+    header_ink: tuple       # title text colour (on the background)
+    header_sub: tuple       # date text colour (on the background)
+    logo_badge: bool        # white badge behind the logo (for dark backgrounds)
+
+
+THEMES: dict[str, Theme] = {
+    # 1) Vibrant indigo→plum gradient, crisp white cards
+    "aurora": Theme(
+        bg_top=(58, 60, 158), bg_bottom=(168, 70, 140),
+        card_bg=(255, 255, 255), card_border=(255, 255, 255),
+        ink=(32, 38, 76), subink=(120, 128, 156),
+        accent=(124, 92, 240), live=(80, 230, 160),
+        shadow=(20, 16, 50, 80), header_ink=(255, 255, 255),
+        header_sub=(226, 224, 245), logo_badge=True,
+    ),
+    # 2) BWN brand: ocean-blue → teal-green gradient, white cards
+    "brand": Theme(
+        bg_top=(14, 74, 124), bg_bottom=(18, 132, 110),
+        card_bg=(255, 255, 255), card_border=(255, 255, 255),
+        ink=(20, 44, 70), subink=(110, 126, 142),
+        accent=(16, 160, 120), live=(255, 214, 90),
+        shadow=(6, 30, 40, 80), header_ink=(255, 255, 255),
+        header_sub=(214, 236, 230), logo_badge=True,
+    ),
+    # 3) Minimal: near-white, colour comes only from icons + temps
+    "mist": Theme(
+        bg_top=(243, 245, 249), bg_bottom=(233, 237, 243),
+        card_bg=(255, 255, 255), card_border=(228, 232, 240),
+        ink=(28, 38, 60), subink=(132, 140, 158),
+        accent=(40, 116, 196), live=(22, 190, 120),
+        shadow=(40, 60, 100, 45), header_ink=(28, 38, 60),
+        header_sub=(130, 140, 158), logo_badge=False,
+    ),
+}
 
 
 @dataclass
 class CardStyle:
-    accent: tuple = ACCENT
-    brand: str = BRAND                  # main brand/logo (text fallback)
-    show_credit: bool = True            # show small "SOURCE: ..." credit
-    headline_size: int | None = None    # px; auto-scaled to width when None
-    max_chars_per_line: int = 22
+    brand: str = BRAND
+    theme: str = "mist"
     width: int = W
     height: int = H
+    accent: tuple | None = None          # unused; kept for CLI compatibility
+    headline_size: int | None = None     # unused; kept for CLI compatibility
 
 
 def _font(size: int, weight: str = "Bold") -> ImageFont.FreeTypeFont:
@@ -54,325 +93,299 @@ def _font(size: int, weight: str = "Bold") -> ImageFont.FreeTypeFont:
     return f
 
 
-def _load_image(url: str | None) -> Image.Image | None:
-    if not url:
+def _load_logo():
+    """Load assets/logo.png as a trimmed RGBA image, or None if absent.
+
+    Works whether the PNG is already transparent or sits on a solid black
+    background — near-black pixels are made transparent, then padding is cropped.
+    """
+    if not os.path.exists(LOGO_PATH):
         return None
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
-        return Image.open(io.BytesIO(resp.content)).convert("RGB")
+        img = Image.open(LOGO_PATH).convert("RGBA")
     except Exception:
         return None
+    if img.getchannel("A").getextrema()[0] >= 250:
+        px = img.load()
+        w, h = img.size
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if max(r, g, b) < 30:
+                    px[x, y] = (r, g, b, 0)
+    bbox = img.getbbox()
+    return img.crop(bbox) if bbox else img
 
 
-def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
-    """Resize + center-crop to exactly fill w x h (object-fit: cover)."""
-    src_ratio = img.width / img.height
-    dst_ratio = w / h
-    if src_ratio > dst_ratio:
-        new_h = h
-        new_w = int(h * src_ratio)
-    else:
-        new_w = w
-        new_h = int(w / src_ratio)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-    left = (new_w - w) // 2
-    top = (new_h - h) // 2
-    return img.crop((left, top, left + w, top + h))
+# --------------------------------------------------------------------------- #
+# Background
+# --------------------------------------------------------------------------- #
+def _gradient(w: int, h: int, top: tuple, bottom: tuple) -> Image.Image:
+    base = Image.new("RGB", (1, h))
+    px = base.load()
+    for y in range(h):
+        t = y / max(1, h - 1)
+        px[0, y] = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+    return base.resize((w, h))
 
 
-def _contain(img: Image.Image, w: int, h: int) -> Image.Image:
-    """Resize to fit fully within w x h, preserving aspect (object-fit: contain)."""
-    scale = min(w / img.width, h / img.height)
-    return img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.LANCZOS)
+# --------------------------------------------------------------------------- #
+# Weather-condition icons (bundled Meteocons PNGs, MIT — assets/icons/<cond>.png)
+# --------------------------------------------------------------------------- #
+_ICON_DIR = os.path.join(_ASSETS, "icons")
+_ICON_CACHE: dict[str, Image.Image] = {}
 
 
-def _fit_with_blur(img: Image.Image, w: int, h: int, gap_reduce: float = 0.0) -> Image.Image:
-    """Show the image over a blurred, darkened cover background.
+def _condition_bn(cond: str) -> str:
+    """Short Bangla label for a normalized sky condition (see weather.CONDITIONS)."""
+    if cond == "sun":
+        return "রৌদ্রোজ্জ্বল"
+    if cond == "partly":
+        return "আংশিক মেঘলা"
+    if cond == "fog":
+        return "কুয়াশা"
+    if cond == "rain":
+        return "বৃষ্টি"
+    if cond == "thunder":
+        return "বজ্রসহ বৃষ্টি"
+    return "মেঘলা"
 
-    gap_reduce interpolates between contain (0.0 = full image, max letterbox)
-    and cover (1.0 = no gap, max crop). gap_reduce=0.4 shrinks the letterbox by
-    exactly 40%, center-cropping the overflowing dimension.
+
+def _icon(size: int, cond: str) -> Image.Image:
+    """Return an RGBA icon of side `size` for a normalized condition string."""
+    src = _ICON_CACHE.get(cond)
+    if src is None:
+        path = os.path.join(_ICON_DIR, f"{cond}.png")
+        if not os.path.exists(path):
+            path = os.path.join(_ICON_DIR, "cloud.png")
+        src = Image.open(path).convert("RGBA")
+        _ICON_CACHE[cond] = src
+    return src.resize((size, size), Image.LANCZOS)
+
+
+def _paste_icon(card: Image.Image, ic: Image.Image, x: int, y: int, s: float) -> None:
+    """Composite an icon onto the card with a soft drop shadow.
+
+    The shadow gives light icons (white clouds) definition on a light card,
+    so they read clearly without darkening the card itself.
     """
-    bg = _cover(img, w, h).filter(ImageFilter.GaussianBlur(max(8, int(0.04 * w))))
-    bg = Image.blend(bg, Image.new("RGB", (w, h), (8, 8, 10)), 0.45)
-
-    contain = min(w / img.width, h / img.height)
-    cover = max(w / img.width, h / img.height)
-    scale = contain + (cover - contain) * max(0.0, min(1.0, gap_reduce))
-    nw, nh = max(1, int(img.width * scale)), max(1, int(img.height * scale))
-    fg = img.resize((nw, nh), Image.LANCZOS)
-    if nw > w or nh > h:                       # center-crop any overflow
-        left, top = max(0, (nw - w) // 2), max(0, (nh - h) // 2)
-        fg = fg.crop((left, top, left + min(nw, w), top + min(nh, h)))
-        nw, nh = fg.size
-    # centre the photo: equal gap top and bottom
-    y_off = (h - nh) // 2
-    bg.paste(fg, ((w - nw) // 2, y_off))
-    return bg, y_off                            # y_off = where the sharp image starts
+    pad = int(10 * s)
+    alpha = ic.getchannel("A")
+    shadow = Image.new("RGBA", ic.size, (36, 58, 92, 0))
+    shadow.putalpha(alpha.point(lambda a: int(a * 0.42)))
+    canvas = Image.new("RGBA", (ic.width + 2 * pad, ic.height + 2 * pad), (0, 0, 0, 0))
+    canvas.alpha_composite(shadow, (pad, pad + int(4 * s)))
+    canvas = canvas.filter(ImageFilter.GaussianBlur(int(4 * s)))
+    canvas.alpha_composite(ic, (pad, pad))
+    card.alpha_composite(canvas, (x - pad, y - pad))
 
 
-def _top_scrim(w: int, height: int, peak: int = 170) -> Image.Image:
-    """Dark gradient at the very top (for logo legibility over light photos)."""
-    grad = Image.new("L", (1, height), 0)
-    for y in range(height):
-        grad.putpixel((0, y), int(peak * (1 - y / height) ** 1.4))
-    grad = grad.resize((w, height))
-    overlay = Image.new("RGBA", (w, height), (0, 0, 0, 0))
-    overlay.putalpha(grad)
-    return overlay
-
-
-def _wrap_px(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
-    """Word-wrap so each line fits within max_w pixels."""
-    words = text.split()
-    lines: list[str] = []
-    cur = ""
-    for word in words:
-        trial = f"{cur} {word}".strip()
-        if font.getlength(trial) <= max_w or not cur:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
-    return lines or [""]
-
-
-def _draw_wordmark(draw, style: "CardStyle", margin: int, top: int, brand_size: int, s: float) -> None:
-    """Draw the text brand 'THE CROSSBAR' with a red accent bar, at vertical `top`."""
-    brand_font = _font(brand_size, "ExtraBold")
-    bar_w = max(4, int(14 * s))
-    draw.rectangle(
-        [margin, top, margin + bar_w, top + int(56 * s)], fill=style.accent
-    )
-    draw.text(
-        (margin + bar_w + int(20 * s), top + int(2 * s)),
-        style.brand.upper(),
-        font=brand_font,
-        fill=TEXT,
-    )
-
-
-def _draw_wordmark_right(draw, style: "CardStyle", w: int, margin: int, center_y: int,
-                         brand_size: int, s: float) -> None:
-    """Draw the text brand right-aligned, vertically centred on `center_y`, with a red accent bar."""
-    brand_font = _font(brand_size, "ExtraBold")
-    text = style.brand.upper()
-    text_w = brand_font.getlength(text)
-    bbox = brand_font.getbbox(text)
-    cap_h = bbox[3] - bbox[1]
-    bar_w = max(3, int(10 * s))
-    gap = int(14 * s)
-    right = w - margin
-    # text right-aligned, vertically centred on center_y (anchor="rm")
-    draw.text((right, center_y), text, font=brand_font, fill=TEXT, anchor="rm")
-    # accent bar just left of the text, centred on the same line
-    bar_right = int(right - text_w - gap)
-    draw.rectangle(
-        [bar_right - bar_w, center_y - cap_h // 2, bar_right, center_y + cap_h // 2],
-        fill=style.accent,
-    )
+# --------------------------------------------------------------------------- #
+# Temperature colour + pulse
+# --------------------------------------------------------------------------- #
+def _temp_color(c: float | None) -> tuple:
+    if c is None:
+        return (140, 150, 168)
+    if c <= 22:
+        return (33, 118, 206)
+    if c <= 28:
+        return (16, 152, 120)
+    if c <= 33:
+        return (230, 146, 24)
+    if c <= 37:
+        return (224, 100, 28)
+    return (210, 54, 48)
 
 
 def _blink_alpha(t: float, hz: float = 1.0) -> float:
-    """Pulsing 0.15..1.0 opacity for the live icon (squared dip = crisper blink)."""
-    base = 0.5 + 0.5 * math.cos(2 * math.pi * hz * t)   # 1 -> 0 -> 1
-    return 0.15 + 0.85 * (base ** 2)
+    base = 0.5 + 0.5 * math.cos(2 * math.pi * hz * t)
+    return 0.2 + 0.8 * (base ** 2)
 
 
-def _draw_live_icon(base: Image.Image, geom, color, alpha: float) -> Image.Image:
-    """Composite an anti-aliased 'record' icon (ring + inner dot) onto a copy of base."""
-    cx, cy, R, ring_th, inner_r = geom
+def _draw_pulse_dot(base: Image.Image, center, r: int, color, alpha: float) -> Image.Image:
+    cx, cy = center
     ss = 4
-    box = R * 2 + 2
-    big = box * ss
-    layer = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    box = (r * 2 + 2) * ss
+    layer = Image.new("RGBA", (box, box), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    col = (*color, int(255 * alpha))
-    d.ellipse([ss, ss, big - ss, big - ss], outline=col, width=ring_th * ss)
-    c = big // 2
-    rr = inner_r * ss
-    d.ellipse([c - rr, c - rr, c + rr, c + rr], fill=col)
-    layer = layer.resize((box, box), Image.LANCZOS)
+    d.ellipse([ss, ss, box - ss, box - ss], fill=(*color, int(255 * alpha)))
+    layer = layer.resize(((r * 2 + 2), (r * 2 + 2)), Image.LANCZOS)
     out = base.convert("RGBA")
-    out.alpha_composite(layer, (cx - R - 1, cy - R - 1))
+    out.alpha_composite(layer, (cx - r - 1, cy - r - 1))
     return out.convert("RGB")
 
 
-_STOP = {"THE", "A", "AN", "OF", "IN", "ON", "AT", "TO", "FOR", "AND", "OR",
-         "AS", "IS", "BY", "WITH", "FROM", "OVER", "AFTER", "AMID"}
-
-
-def _is_emphasis(word: str) -> bool:
-    """Heuristic: bold proper nouns / acronyms (capitalised, non-stopword)."""
-    core = word.strip(".,;:!?'\"’“”()-—–")
-    if not core:
-        return False
-    if core.isupper() and len(core) > 1:        # acronyms: UN, US, FBI
-        return True
-    if core[0].isupper() and core.upper() not in _STOP:
-        return True
-    return False
-
-
-def _layout_headline(title, max_w, base_font, bold_font):
-    """Wrap into lines of (word, font) tuples, bolding emphasis words."""
-    space_w = base_font.getlength(" ")
-    lines, cur, cur_w = [], [], 0.0
-    for word in title.split():
-        f = bold_font if _is_emphasis(word) else base_font
-        ww = f.getlength(word)
-        add = ww + (space_w if cur else 0)
-        if cur and cur_w + add > max_w:
-            lines.append(cur)
-            cur, cur_w = [], 0.0
-            add = ww
-        cur.append((word, f))
-        cur_w += add
-    if cur:
-        lines.append(cur)
-    return lines or [[("", base_font)]]
-
-
-def _compose(article: Article, style: CardStyle):
-    """Render everything except the blinking icon. Returns (image, icon_geom)."""
-    w, h = style.width, style.height
-    s = w / 1080.0                       # scale factor relative to the 1080 baseline
-
-    margin = int(70 * s)
-    brand_size = max(14, int(40 * s))
-    foot_size = max(11, int(24 * s))
-    pad = margin
-    gap = int(20 * s)
-    space_w_extra = int(2 * s)
-    text_w = w - 2 * margin
-
-    # LIVE badge metrics
-    R = max(8, int(17 * s))              # icon outer radius
-    ring_th = max(2, int(4 * s))
-    inner_r = max(3, int(7 * s))
-    live_size = int(34 * s)
-    live_font = _font(live_size, "ExtraBold")
-    live_h = max(2 * R, live_font.getbbox("LIVE")[3])
-
-    # red footer bar (photo credit)
-    bar_h = int(52 * s)
-    bar_top = h - bar_h
-    accent_h = max(2, int(6 * s))
-
-    # --- fit the headline (cap at 6 lines) ---
-    hl_size = style.headline_size or int(56 * s)
-    min_size = int(30 * s)
-    while True:
-        base_font = _font(hl_size, "Medium")
-        bold_font = _font(hl_size, "ExtraBold")
-        lines = _layout_headline(article.title, text_w, base_font, bold_font)
-        if len(lines) <= 6 or hl_size <= min_size:
-            break
-        hl_size -= max(1, int(3 * s))
-    line_h = int(hl_size * 1.18)
-    block_h = line_h * len(lines)
-
-    # --- LIVE + headline sit just above the footer; the image fills everything
-    #     above them, with a small gap between the accent line and the badge. ---
-    live_top_gap = int(40 * s)
-    text_block_h = live_h + gap + block_h
-    row_top = bar_top - pad - text_block_h
-    img_h = max(1, row_top - live_top_gap - accent_h)
-
-    # --- compose: photo on top (letterbox reduced 60%, centred), panel below ---
-    card = Image.new("RGB", (w, h), PANEL)
-    src = _load_image(article.image_url)
-    if src is not None:
-        photo, photo_top = _fit_with_blur(src, w, img_h, gap_reduce=0.6)
-        card.paste(photo, (0, 0))
+def _tri(d, cx, cy, r, color, up: bool) -> None:
+    if up:
+        pts = [(cx, cy - r), (cx - r, cy + r), (cx + r, cy + r)]
     else:
-        card.paste(Image.new("RGB", (w, img_h), (30, 31, 38)), (0, 0))
-        photo_top = 0
-    card = card.convert("RGBA")
-    card.alpha_composite(_top_scrim(w, int(160 * s)))
+        pts = [(cx, cy + r), (cx - r, cy - r), (cx + r, cy - r)]
+    d.polygon(pts, fill=color)
+
+
+# --------------------------------------------------------------------------- #
+# Compose
+# --------------------------------------------------------------------------- #
+def _compose(report: WeatherReport, style: CardStyle):
+    """Render everything except the pulsing dot. Returns (image, dot_geom)."""
+    w, h = style.width, style.height
+    s = w / 1080.0
+    margin = int(60 * s)
+
+    date_str = bangla.bn_date(report.fetched_at.date())
+    slot = bangla.slot_label(report.fetched_at)
+    th = THEMES.get(style.theme, THEMES["aurora"])
+
+    card = _gradient(w, h, th.bg_top, th.bg_bottom).convert("RGBA")
+
+    # ---- header geometry -------------------------------------------------
+    title_y = int(46 * s)
+    chip_font = _font(int(27 * s), "SemiBold")
+    chip_tw = chip_font.getlength(slot)
+    dot_r = max(5, int(8 * s))
+    chip_pad = int(20 * s)
+    chip_h = int(52 * s)
+    chip_gap = int(12 * s)
+    chip_w = int(dot_r * 2 + chip_gap + chip_tw + 2 * chip_pad)
+    chip_x1 = w - margin - chip_w
+    chip_y0 = title_y + int(2 * s)
+    chip_y1 = chip_y0 + chip_h
+    chip_cy = (chip_y0 + chip_y1) // 2
+    dot_cx = chip_x1 + chip_pad + dot_r
+
+    # ---- grid geometry ---------------------------------------------------
+    cols, rows = 2, 4
+    gap = int(24 * s)
+    grid_top = int(168 * s)
+    foot_h = int(50 * s)
+    foot_top = h - foot_h
+    grid_bottom = foot_top - gap
+    card_w = (w - 2 * margin - (cols - 1) * gap) / cols
+    card_h = (grid_bottom - grid_top - (rows - 1) * gap) / rows
+    radius = int(28 * s)
+
+    cells = []
+    for i in range(len(report.divisions)):
+        r, c = divmod(i, cols)
+        x0 = margin + c * (card_w + gap)
+        y0 = grid_top + r * (card_h + gap)
+        cells.append([x0, y0, x0 + card_w, y0 + card_h])
+
+    # ---- soft drop shadows under the cards -------------------------------
+    shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    off = int(7 * s)
+    for x0, y0, x1, y1 in cells:
+        sd.rounded_rectangle([x0, y0 + off, x1, y1 + off], radius=radius, fill=th.shadow)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(int(9 * s)))
+    card.alpha_composite(shadow)
+
     draw = ImageDraw.Draw(card)
 
-    # accent line directly above the title + red footer bar
-    draw.rectangle([0, img_h, w, img_h + accent_h], fill=style.accent)
-    draw.rectangle([0, bar_top, w, h], fill=style.accent)
+    # ---- cards -----------------------------------------------------------
+    for x0, y0, x1, y1 in cells:
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius,
+                               fill=th.card_bg, outline=th.card_border, width=max(1, int(1.4 * s)))
 
-    # --- LIVE badge (left) + brand (right) share one row, above the headline ---
-    icon_cx = margin + R
-    icon_cy = row_top + live_h // 2
-    icon_geom = (icon_cx, icon_cy, R, ring_th, inner_r)
-    live_x = margin + 2 * R + int(16 * s)
-    # anchor="lm" → vertically centred on icon_cy, exactly level with the dot icon
-    draw.text((live_x, icon_cy), "LIVE", font=live_font, fill=TEXT, anchor="lm")
+    # ---- condition icons -------------------------------------------------
+    icon_sz = int(card_h * 0.52)
+    for (x0, y0, x1, _y1), dv in zip(cells, report.divisions):
+        ic = _icon(icon_sz, dv.condition)
+        _paste_icon(card, ic, int(x1 - int(14 * s) - icon_sz), int(y0 + int(10 * s)), s)
 
-    # brand logo/wordmark, right-aligned on the LIVE row
-    if os.path.exists(LOGO_PATH):
-        try:
-            logo = Image.open(LOGO_PATH).convert("RGBA")
-            target_h = max(2 * R, int(48 * s))
-            target_w = int(logo.width * (target_h / logo.height))
-            logo = logo.resize((target_w, target_h), Image.LANCZOS)
-            card.alpha_composite(logo, (w - margin - target_w, icon_cy - target_h // 2))
-        except Exception:
-            _draw_wordmark_right(draw, style, w, margin, icon_cy, brand_size, s)
+    # ---- time-slot chip --------------------------------------------------
+    draw.rounded_rectangle([chip_x1, chip_y0, w - margin, chip_y1],
+                           radius=chip_h // 2, fill=th.accent)
+    draw.text((dot_cx + dot_r + chip_gap, chip_cy), slot,
+              font=chip_font, fill=(255, 255, 255), anchor="lm")
+    dot_geom = ((dot_cx, chip_cy), dot_r, th.live)
+
+    # ---- header: logo (if present) + title + date -----------------------
+    title_font = _font(int(54 * s), "ExtraBold")
+    sub_font = _font(int(28 * s), "Medium")
+    logo = _load_logo()
+    if logo is not None:
+        logo_h = int(116 * s)
+        logo_w = max(1, int(logo.width * (logo_h / logo.height)))
+        logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
+        logo_y = title_y - int(12 * s)
+        if th.logo_badge:                       # white badge for dark backgrounds
+            bpad = int(12 * s)
+            draw.rounded_rectangle(
+                [margin - bpad // 2, logo_y - bpad // 2,
+                 margin + logo_w + bpad, logo_y + logo_h + bpad // 2],
+                radius=int(18 * s), fill=(255, 255, 255, 255))
+        card.alpha_composite(logo, (margin, logo_y))
+        tx = margin + logo_w + (int(26 * s) if th.logo_badge else int(18 * s))
     else:
-        _draw_wordmark_right(draw, style, w, margin, icon_cy, brand_size, s)
+        bar_w = max(5, int(11 * s))
+        draw.rectangle([margin, title_y + int(4 * s), margin + bar_w,
+                        title_y + int(52 * s)], fill=th.accent)
+        tx = margin + bar_w + int(16 * s)
+    draw.text((tx, title_y), style.brand, font=title_font, fill=th.header_ink)
+    draw.text((tx, title_y + int(58 * s)), date_str, font=sub_font, fill=th.header_sub)
 
-    # --- headline (mixed weight) ---
-    y = row_top + live_h + gap
-    for line in lines:
-        x = margin
-        for word, f in line:
-            draw.text((x, y), word, font=f, fill=TEXT)
-            x += f.getlength(word) + f.getlength(" ") + space_w_extra
-        y += line_h
+    # ---- per-card content ------------------------------------------------
+    name_font = _font(int(34 * s), "Bold")
+    temp_font = _font(int(76 * s), "ExtraBold")
+    cond_font = _font(int(25 * s), "Medium")
+    lh_font = _font(int(26 * s), "SemiBold")
+    pad = int(24 * s)
 
-    # --- footer bar: date left, photo credit right (white on red) ---
-    foot_font = _font(foot_size, "SemiBold")
-    foot_h = foot_font.getbbox("Ag")[3]
-    fy = bar_top + (bar_h - foot_h) // 2
-    date_str = _dt.date.today().strftime("%d %B %Y").upper()
-    draw.text((margin, fy), date_str, font=foot_font, fill=TEXT)
-    if style.show_credit and article.source:
-        credit = f"PHOTO: {article.source.upper()}"
-        cw = foot_font.getlength(credit)
-        draw.text((w - margin - cw, fy), credit, font=foot_font, fill=TEXT)
+    for (x0, y0, x1, y1), dv in zip(cells, report.divisions):
+        draw.text((x0 + pad, y0 + int(18 * s)), dv.name_bn, font=name_font, fill=th.ink)
+        draw.text((x0 + pad - int(2 * s), y0 + int(56 * s)), bangla.temp_bn(dv.current),
+                  font=temp_font, fill=_temp_color(dv.current))
+        draw.text((x0 + pad, y0 + int(148 * s)), _condition_bn(dv.condition),
+                  font=cond_font, fill=th.subink)
+        ly = y1 - pad - int(6 * s)
+        tri_r = int(8 * s)
+        cx = x0 + pad + tri_r
+        _tri(draw, cx, ly, tri_r, (44, 110, 200), up=False)
+        lo = bangla.temp_bn(dv.tmin)
+        draw.text((cx + tri_r + int(8 * s), ly), lo, font=lh_font, fill=(44, 110, 200), anchor="lm")
+        gap_x = cx + tri_r + int(8 * s) + lh_font.getlength(lo) + int(26 * s)
+        _tri(draw, int(gap_x + tri_r), ly, tri_r, (216, 120, 36), up=True)
+        draw.text((gap_x + 2 * tri_r + int(8 * s), ly), bangla.temp_bn(dv.tmax),
+                  font=lh_font, fill=(216, 120, 36), anchor="lm")
 
-    return card.convert("RGB"), icon_geom
+    # ---- footer ----------------------------------------------------------
+    foot_font = _font(int(23 * s), "SemiBold")
+    fy = (foot_top + h) // 2
+    draw.text((margin, fy), f"তথ্যসূত্র: {report.source}", font=foot_font,
+              fill=th.header_sub, anchor="lm")
+    draw.text((w - margin, fy), f"হালনাগাদ: {slot}", font=foot_font,
+              fill=th.header_sub, anchor="rm")
+
+    return card.convert("RGB"), dot_geom
 
 
-def build_card(article: Article, style: CardStyle | None = None) -> Image.Image:
-    """Static card (live icon shown solid). Used for PNG previews."""
+def build_card(report: WeatherReport, style: CardStyle | None = None) -> Image.Image:
+    """Static card (pulse dot shown solid). Used for PNG previews."""
     style = style or CardStyle()
-    img, geom = _compose(article, style)
-    return _draw_live_icon(img, geom, style.accent, 1.0)
+    img, (center, r, color) = _compose(report, style)
+    return _draw_pulse_dot(img, center, r, color, 1.0)
 
 
-def make_frames(article: Article, style: CardStyle | None, n_frames: int, fps: int = 30):
-    """Render `n_frames` with the LIVE icon blinking; everything else still."""
+def make_frames(report: WeatherReport, style: CardStyle | None, n_frames: int, fps: int = 30):
+    """Render `n_frames` with the update dot pulsing; everything else still."""
     style = style or CardStyle()
-    base, geom = _compose(article, style)
+    base, (center, r, color) = _compose(report, style)
     return [
-        _draw_live_icon(base, geom, style.accent, _blink_alpha(i / fps))
+        _draw_pulse_dot(base, center, r, color, _blink_alpha(i / fps))
         for i in range(n_frames)
     ]
 
 
-def save_card(article: Article, out_path: str, style: CardStyle | None = None) -> str:
-    img = build_card(article, style)
+def save_card(report: WeatherReport, out_path: str, style: CardStyle | None = None) -> str:
+    img = build_card(report, style)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     img.save(out_path, "PNG")
     return out_path
 
 
 if __name__ == "__main__":
-    demo = Article(
-        title="Late winner sends underdogs through to the cup final in dramatic style",
-        image_url=None,
-        source="DEMO FOOTBALL",
-        url="https://example.com",
-    )
-    save_card(demo, "output/demo_card.png")
-    print("wrote output/demo_card.png")
+    from .weather import fetch_report
+
+    save_card(fetch_report(), "output/demo_weather.png")
+    print("wrote output/demo_weather.png")

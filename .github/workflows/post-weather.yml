@@ -1,32 +1,25 @@
-name: Post Football Reel to Facebook
+name: Post Bangladesh Weather Reel to Facebook
 
-# Each run rotates across all football sources (src/feeds.py): prepare (clean headline,
-# build the branded card + 3s video, stage it) then publish (caption + rotating
-# hashtags + auto source comment). Dedup + rotation + hashtag cursors live in
-# state.json and are committed back so they persist between scheduled runs.
+# Each run fetches current + today's min/max temperatures for all 8 divisions
+# from Meteosource, builds a Bangla weather card + short video, then publishes it
+# as a Facebook Reel. The hashtag-rotation cursor lives in state.json and is
+# committed back so it advances between scheduled runs.
 #
 # Configure in the repo:
-#   Secrets:  FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN
+#   Secrets:  METEOSOURCE_API_KEY, FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: "Specific article URL (overrides rotation)"
-        required: false
-        default: ""
-      rss:
-        description: "Specific RSS feed (overrides rotation)"
-        required: false
-        default: ""
       no_post:
         description: "Generate assets only, do not publish"
         type: boolean
         default: false
   schedule:
-    # Five times a day (UTC): 07:00, 11:00, 14:00, 17:00, 20:00 — spread across
-    # UK/Europe + US football hours. cron is UTC; edit the times to taste.
-    - cron: "0 7,11,14,17,20 * * *"
+    # Four times a day at 10:00, 12:00, 18:00 and 22:00 Bangladesh time
+    # (Asia/Dhaka = UTC+6). cron is UTC, so subtract 6 hours.
+    #   10:00 BST -> 04:00 UTC | 12:00 -> 06:00 | 18:00 -> 12:00 | 22:00 -> 16:00
+    - cron: "0 4,6,12,16 * * *"
 
 # contents: push the updated state.json back; issues: open a failure alert
 permissions:
@@ -35,11 +28,11 @@ permissions:
 
 # never run two posts at once (would race on state.json)
 concurrency:
-  group: post-reel
+  group: post-weather
   cancel-in-progress: false
 
 jobs:
-  post-reel:
+  post-weather:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,38 +50,34 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build and post Football Reel
+      - name: Verify Bangla text shaping (raqm) is available
+        run: python -c "from PIL import features; assert features.check('raqm'), 'Pillow built without raqm — Bangla will render incorrectly'"
+
+      - name: Build and post Weather Reel
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-          INPUT_URL: ${{ github.event.inputs.url }}
-          INPUT_RSS: ${{ github.event.inputs.rss }}
+          METEOSOURCE_API_KEY: ${{ secrets.METEOSOURCE_API_KEY }}
           NO_POST: ${{ github.event.inputs.no_post }}
         run: |
           set -e
-          # 1) PREPARE: scrape + clean headline + build card/video + stage
-          if [ -n "$INPUT_URL" ]; then
-            python main.py --url "$INPUT_URL" --no-post
-          elif [ -n "$INPUT_RSS" ]; then
-            python main.py --rss "$INPUT_RSS" --no-post
-          else
-            python main.py --rotate
-          fi
-          # 2) PUBLISH the staged Reel (caption + hashtags + auto source comment)
+          # 1) BUILD: fetch weather + render card/video + stage it
+          python main.py --no-post
+          # 2) PUBLISH the staged Reel (caption + rotating hashtags)
           if [ "$NO_POST" = "true" ]; then
             echo "no_post=true → staged only, not publishing."
           else
             python main.py --publish
           fi
 
-      - name: Commit updated rotation/hashtag state
+      - name: Commit updated hashtag state
         if: success()
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add state.json
-            git commit -m "chore: update reel rotation + hashtag state [skip ci]"
+            git commit -m "chore: advance weather hashtag rotation [skip ci]"
             git push
           else
             echo "No state change to commit."
@@ -98,7 +87,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reel-output
+          name: weather-output
           path: |
             output/*.png
             output/*.mp4
@@ -116,21 +105,21 @@ jobs:
             const { owner, repo } = context.repo;
             const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const body = [
-              'The scheduled Facebook Reel job **failed**.',
+              'The scheduled Bangladesh Weather Reel job **failed**.',
               '',
               `- Run log: ${runUrl}`,
               `- Run number: #${context.runNumber}`,
               '',
-              'Likely causes: Facebook token invalidated, a news feed offline, ' +
+              'Likely causes: Facebook token invalidated, Meteosource key/quota or outage, ' +
               'or a build/dependency error. Open the run log above for details.',
             ].join('\n');
             const open = await github.rest.issues.listForRepo(
-              { owner, repo, state: 'open', labels: 'reel-failure' });
+              { owner, repo, state: 'open', labels: 'weather-failure' });
             if (open.data.length) {
               await github.rest.issues.createComment(
                 { owner, repo, issue_number: open.data[0].number, body });
             } else {
               await github.rest.issues.create(
-                { owner, repo, title: '⚠️ Football Reel posting is failing',
-                  body, labels: ['reel-failure'] });
+                { owner, repo, title: '⚠️ Bangladesh Weather Reel posting is failing',
+                  body, labels: ['weather-failure'] });
             }
