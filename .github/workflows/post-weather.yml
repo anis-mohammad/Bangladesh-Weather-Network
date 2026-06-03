@@ -9,17 +9,16 @@ name: Post Bangladesh Weather Reel to Facebook
 #   Secrets:  METEOSOURCE_API_KEY, FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN
 
 on:
+  # Triggered externally by cron-job.org at 10:00/12:00/18:00/22:00 Asia/Dhaka
+  # (it POSTs to the Actions dispatch API). GitHub's own `schedule:` is removed
+  # because its runs are delayed/unreliable; cron-job.org fires on time.
+  # Manual runs are still available from the Actions tab (tick no_post to dry-run).
   workflow_dispatch:
     inputs:
       no_post:
         description: "Generate assets only, do not publish"
         type: boolean
         default: false
-  schedule:
-    # Four times a day at 10:00, 12:00, 18:00 and 22:00 Bangladesh time
-    # (Asia/Dhaka = UTC+6). cron is UTC, so subtract 6 hours.
-    #   10:00 BST -> 04:00 UTC | 12:00 -> 06:00 | 18:00 -> 12:00 | 22:00 -> 16:00
-    - cron: "0 4,6,12,16 * * *"
 
 # contents: push the updated state.json back; issues: open a failure alert
 permissions:
