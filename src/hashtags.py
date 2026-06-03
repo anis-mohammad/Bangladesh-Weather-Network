@@ -1,11 +1,12 @@
 """Weather / Bangladesh hashtags, used a block at a time in rotating order.
 
-`BRAND_TAG` is added to every post on top of the rotating block (see main.py),
+`BRAND_TAGS` are added to every post on top of the rotating block (see main.py),
 so each caption gets the brand tag + PER_POST rotating tags. Rotating the block
 each post keeps captions from being byte-identical run to run.
 """
 
-BRAND_TAG = "bdweather"            # always included, on top of the rotating block
+# Always included on every post, on top of the rotating block.
+BRAND_TAGS = ["BWN", "BangladeshWeatherNetwork"]
 PER_POST = 6
 
 HASHTAGS = [
@@ -30,12 +31,12 @@ def block_at(cursor: int) -> list[str]:
 
 
 def render(cursor: int) -> str:
-    """'#bdweather #tag1 #tag2 ...' for the block at `cursor`."""
-    tags = [BRAND_TAG] + block_at(cursor)
-    # de-dup while preserving order (BRAND_TAG may also appear in the block)
+    """'#BWN #BangladeshWeatherNetwork #tag1 #tag2 ...' for the block at `cursor`."""
+    tags = BRAND_TAGS + block_at(cursor)
+    # de-dup case-insensitively, preserving order (brand tags take precedence)
     seen, ordered = set(), []
     for t in tags:
-        if t not in seen:
-            seen.add(t)
+        if t.lower() not in seen:
+            seen.add(t.lower())
             ordered.append(t)
     return " ".join(f"#{t}" for t in ordered)
